@@ -58,7 +58,7 @@ const real = n => Number(n).toLocaleString('pt-BR', { style: 'currency', currenc
 
 let editando = null;     // produto que está sendo editado (ou null se for novo)
 let fotosAtuais = [];    // endereços das fotos que o produto tem agora
-let usuarioAtual = null;
+let usuarioAtual;        // começa vazio de propósito (undefined), para a tela de login aparecer
 
 function el(tag, attrs = {}, ...filhos) {
   const e = document.createElement(tag);
