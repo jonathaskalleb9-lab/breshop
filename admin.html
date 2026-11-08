@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Painel da loja</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topo">
+  <h1>Painel da loja</h1>
+  <p>Área do administrador</p>
+</header>
+
+<main>
+  <section id="tela-login" class="caixa" hidden>
+    <p style="margin-bottom:12px">Entre com o Gmail do administrador.</p>
+    <button id="btn-entrar" class="btn cheio">Entrar com Google</button>
+  </section>
+
+  <section id="tela-painel" hidden>
+    <div class="barra">
+      <button id="btn-novo" class="btn">+ Novo produto</button>
+      <button id="btn-link" class="btn claro">Copiar link da loja</button>
+      <button id="btn-sair" class="btn claro">Sair</button>
+    </div>
+
+    <form id="form" class="caixa" hidden>
+      <h2 id="form-titulo">Novo produto</h2>
+      <label for="f-nome">Nome</label>
+      <input id="f-nome" type="text" required>
+      <label for="f-preco">Preço (R$)</label>
+      <input id="f-preco" type="text" inputmode="decimal" placeholder="Ex.: 49,90" required>
+      <label for="f-desc">Descrição</label>
+      <textarea id="f-desc" placeholder="Tamanho, estado da peça, medidas..."></textarea>
+      <label for="f-fotos">Fotos (tire na hora ou escolha da galeria)</label>
+      <input id="f-fotos" type="file" accept="image/*" multiple>
+      <div id="f-atuais" class="miniaturas"></div>
+      <div class="acoes">
+        <button id="f-salvar" type="submit" class="btn">Salvar</button>
+        <button id="f-cancelar" type="button" class="btn claro">Cancelar</button>
+      </div>
+    </form>
+
+    <div id="lista"></div>
+  </section>
+
+  <p id="aviso" class="msg"></p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+const real = n => Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+let editando = null;     // produto que está sendo editado (ou null se for novo)
+let fotosAtuais = [];    // endereços das fotos que o produto tem agora
+let usuarioAtual = null;
+
+function el(tag, attrs = {}, ...filhos) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  filhos.flat().forEach(f => e.append(f));
+  return e;
+}
+
+function aviso(texto) { $('aviso').textContent = texto || ''; }
+function erro(err) {
+  console.error(err);
+  const t = (err && err.message) || '';
+  if (t.includes('row-level security') || err.code === '42501') {
+    aviso('Sem permissão. Saia e entre com o Gmail do administrador.');
+  } else {
+    aviso('Algo deu errado: ' + t);
+  }
+}
+
+// ---------- Login ----------
+$('btn-entrar').addEventListener('click', () => {
+  db.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: location.origin + '/admin.html' }
+  });
+});
+$('btn-sair').addEventListener('click', async () => { await db.auth.signOut(); });
+
+function mostrar(session) {
+  const id = session ? session.user.id : null;
+  if (id === usuarioAtual) return;
+  usuarioAtual = id;
+  $('tela-login').hidden = !!session;
+  $('tela-painel').hidden = !session;
+  aviso('');
+  if (session) listar();
+}
+db.auth.getSession().then(({ data }) => mostrar(data.session));
+db.auth.onAuthStateChange((_evento, session) => mostrar(session));
+
+// ---------- Copiar link da loja ----------
+$('btn-link').addEventListener('click', async () => {
+  const link = location.origin + '/';
+  try {
+    await navigator.clipboard.writeText(link);
+    aviso('Link da loja copiado! Agora é só colar no WhatsApp.');
+  } catch (e) {
+    prompt('Copie o link da loja:', link);
+  }
+});
+
+// ---------- Fotos ----------
+function reduzir(arquivo) {
+  return new Promise((ok, no) => {
+    const img = new Image();
+    const url = URL.createObjectURL(arquivo);
+    img.onload = () => {
+      const max = 1200;
+      const r = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * r), h = Math.round(img.height * r);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => b ? ok(b) : no(new Error('Não consegui preparar a foto')), 'image/jpeg', 0.82);
+    };
+    img.onerror = () => no(new Error('Essa foto não abriu'));
+    img.src = url;
+  });
+}
+
+async function enviarFoto(arquivo) {
+  const blob = await reduzir(arquivo);
+  const nome = crypto.randomUUID() + '.jpg';
+  const { error } = await db.storage.from('fotos').upload(nome, blob, { contentType: 'image/jpeg' });
+  if (error) throw error;
+  return db.storage.from('fotos').getPublicUrl(nome).data.publicUrl;
+}
+
+function nomeDoArquivo(url) { return url.split('/').pop(); }
+
+function desenharMiniaturas() {
+  $('f-atuais').replaceChildren(...fotosAtuais.map(u =>
+    el('div', { class: 'mini' },
+      el('img', { src: u, alt: '' }),
+      el('button', { type: 'button', title: 'Tirar foto', onclick: () => {
+        fotosAtuais = fotosAtuais.filter(x => x !== u);
+        desenharMiniaturas();
+      } }, '×')
+    )
+  ));
+}
+
+// ---------- Formulário ----------
+function abrirForm(produto) {
+  editando = produto || null;
+  fotosAtuais = produto ? [...(produto.fotos || [])] : [];
+  $('form-titulo').textContent = produto ? 'Editar produto' : 'Novo produto';
+  $('f-nome').value = produto ? produto.nome : '';
+  $('f-preco').value = produto ? String(produto.preco).replace('.', ',') : '';
+  $('f-desc').value = produto ? (produto.descricao || '') : '';
+  $('f-fotos').value = '';
+  desenharMiniaturas();
+  $('form').hidden = false;
+  $('form').scrollIntoView({ behavior: 'smooth' });
+  aviso('');
+}
+function fecharForm() { $('form').hidden = true; editando = null; }
+
+$('btn-novo').addEventListener('click', () => abrirForm(null));
+$('f-cancelar').addEventListener('click', fecharForm);
+
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const preco = parseFloat($('f-preco').value.replace(/\./g, '').replace(',', '.'));
+  if (isNaN(preco)) { aviso('Digite o preço só com números. Ex.: 49,90'); return; }
+  $('f-salvar').disabled = true;
+  aviso('Salvando... (as fotos podem demorar um pouco)');
+  try {
+    const novas = [];
+    for (const arq of $('f-fotos').files) novas.push(await enviarFoto(arq));
+    const dados = {
+      nome: $('f-nome').value.trim(),
+      descricao: $('f-desc').value.trim(),
+      preco,
+      fotos: [...fotosAtuais, ...novas]
+    };
+    const r = editando
+      ? await db.from('produtos').update(dados).eq('id', editando.id)
+      : await db.from('produtos').insert(dados);
+    if (r.error) throw r.error;
+    if (editando) {
+      const tiradas = (editando.fotos || []).filter(u => !fotosAtuais.includes(u)).map(nomeDoArquivo);
+      if (tiradas.length) await db.storage.from('fotos').remove(tiradas);
+    }
+    fecharForm();
+    await listar();
+    aviso('Salvo! ✅');
+  } catch (err) {
+    erro(err);
+  } finally {
+    $('f-salvar').disabled = false;
+  }
+});
+
+// ---------- Lista ----------
+async function listar() {
+  const { data, error } = await db.from('produtos').select('*').order('criado_em', { ascending: false });
+  if (error) { erro(error); return; }
+  const lista = data || [];
+  if (!lista.length) {
+    $('lista').replaceChildren(el('p', { class: 'msg' }, 'Nenhum produto ainda. Toque em "+ Novo produto".'));
+    return;
+  }
+  $('lista').replaceChildren(...lista.map(p => {
+    const vendido = p.disponivel === false;
+    return el('div', { class: 'item' },
+      el('img', { src: (p.fotos && p.fotos[0]) || '', alt: '' }),
+      el('div', { class: 'dados' },
+        el('b', {}, p.nome, vendido ? el('span', { class: 'tag' }, 'Vendido') : ''),
+        el('span', {}, real(p.preco)),
+        el('div', { class: 'botoes' },
+          el('button', { class: 'btn claro pequeno', onclick: () => abrirForm(p) }, 'Editar'),
+          el('button', { class: 'btn claro pequeno', onclick: () => alternarVendido(p) }, vendido ? 'Voltar à venda' : 'Marcar vendido'),
+          el('button', { class: 'btn perigo pequeno', onclick: () => excluir(p) }, 'Excluir')
+        )
+      )
+    );
+  }));
+}
+
+async function alternarVendido(p) {
+  const { error } = await db.from('produtos').update({ disponivel: p.disponivel === false }).eq('id', p.id);
+  if (error) return erro(error);
+  listar();
+}
+
+async function excluir(p) {
+  if (!confirm('Excluir "' + p.nome + '" de vez? Isso não dá para desfazer.')) return;
+  const { error } = await db.from('produtos').delete().eq('id', p.id);
+  if (error) return erro(error);
+  const nomes = (p.fotos || []).map(nomeDoArquivo);
+  if (nomes.length) await db.storage.from('fotos').remove(nomes);
+  listar();
+  aviso('Produto excluído.');
+}
+</script>
+</body>
+</html>

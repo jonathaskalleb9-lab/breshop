@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brechop</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topo">
+  <h1 id="nome-loja">Brechop</h1>
+  <p>Peças únicas. Toque para ver os detalhes.</p>
+</header>
+
+<main>
+  <div id="grade" class="grade"></div>
+  <p id="vazio" class="msg" hidden>Nenhum produto por enquanto. Volte em breve!</p>
+</main>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-caixa">
+    <div id="m-fotos" class="fotos"></div>
+    <div class="modal-info">
+      <h2 id="m-nome"></h2>
+      <p id="m-preco" class="preco"></p>
+      <p id="m-desc" class="desc"></p>
+      <a id="m-zap" class="btn cheio" target="_blank" rel="noopener">Pedir no WhatsApp</a>
+      <button id="m-fechar" class="btn claro cheio" style="margin-top:8px">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const db = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+const real = n => Number(n).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+document.title = CONFIG.STORE_NAME;
+$('nome-loja').textContent = CONFIG.STORE_NAME;
+
+function el(tag, attrs = {}, ...filhos) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  filhos.flat().forEach(f => e.append(f));
+  return e;
+}
+
+async function carregar() {
+  const { data, error } = await db.from('produtos').select('*').order('criado_em', { ascending: false });
+  if (error) {
+    $('vazio').textContent = 'Não foi possível carregar a loja agora. Tente de novo daqui a pouco.';
+    $('vazio').hidden = false;
+    return;
+  }
+  // produtos disponíveis primeiro, vendidos no fim
+  const lista = (data || []).sort((a, b) => Number(a.disponivel === false) - Number(b.disponivel === false));
+  $('grade').replaceChildren();
+  $('vazio').hidden = lista.length > 0;
+  lista.forEach(p => {
+    const vendido = p.disponivel === false;
+    const foto = (p.fotos && p.fotos[0]) ? el('img', { src: p.fotos[0], alt: p.nome, loading: 'lazy' }) : el('img', { alt: '' });
+    const card = el('div', { class: 'card' + (vendido ? ' vendido' : ''), onclick: () => abrir(p) },
+      foto,
+      vendido ? el('span', { class: 'selo' }, 'Vendido') : '',
+      el('div', { class: 'info' },
+        el('div', { class: 'nome' }, p.nome),
+        el('div', { class: 'preco' }, real(p.preco))
+      )
+    );
+    $('grade').append(card);
+  });
+}
+
+function abrir(p) {
+  $('m-fotos').replaceChildren(...(p.fotos || []).map(u => el('img', { src: u, alt: p.nome })));
+  $('m-nome').textContent = p.nome;
+  $('m-preco').textContent = real(p.preco);
+  $('m-desc').textContent = p.descricao || '';
+  const vendido = p.disponivel === false;
+  $('m-zap').hidden = vendido;
+  if (!vendido) {
+    const msg = `Oi! Tenho interesse em: ${p.nome} (${real(p.preco)})`;
+    $('m-zap').href = `https://wa.me/${CONFIG.WHATSAPP}?text=${encodeURIComponent(msg)}`;
+  }
+  $('modal').hidden = false;
+}
+
+function fechar() { $('modal').hidden = true; }
+$('m-fechar').addEventListener('click', fechar);
+$('modal').addEventListener('click', e => { if (e.target === $('modal')) fechar(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') fechar(); });
+
+carregar();
+</script>
+</body>
+</html>
